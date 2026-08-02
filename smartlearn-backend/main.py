@@ -88,11 +88,11 @@ async def chat(request: ChatRequest):
 
     try:
         answer = answer_from_pages(pages, request.message)
-    except RuntimeError as e:
-        raise HTTPException(status_code=502, detail=str(e))
-    except Exception:
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(
-            status_code=502, detail="Upstream AI service failed"
+            status_code=502, detail=f"{type(e).__name__}: {e}"
         )
 
     cited = {int(m.group(1)) for m in re.finditer(r"[\[【]Page\s+(\d+)[\]】]", answer)}
