@@ -27,15 +27,19 @@ def answer_from_pages(pages: list[dict], message: str) -> str:
         api_key=api_key,
         base_url="https://openrouter.ai/api/v1",
     )
-    response = client.chat.completions.create(
-        model=os.getenv("OPENROUTER_MODEL", "openrouter/free"),
-        temperature=0.0,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": f"PDF text:\n{document_text}\n\nmessage: {message}",
-            },
-        ],
-    )
+    try:
+        response = client.chat.completions.create(
+            model=os.getenv("OPENROUTER_MODEL", "openrouter/free"),
+            temperature=0.0,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": f"PDF text:\n{document_text}\n\nmessage: {message}",
+                },
+            ],
+        )
+    except Exception as e:
+        raise RuntimeError(f"OpenRouter call failed: {type(e).__name__}: {e}")
+
     return response.choices[0].message.content or ""
