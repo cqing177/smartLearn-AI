@@ -1,47 +1,94 @@
-export default function ChatPanel({ message, onMessageChange, answer, hasUpload, status, onAsk }) {
-  const busy = status !== "idle";
+import { useState } from "react";
+import { askQuestion } from "./api.js";
+
+export default function ChatPanel({ enabled, onBusy, disabled, onJumpToPage }) {
+  const [message, setMessage] = useState("");
+  const [messages, setMessages] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const handleAsk = async () => {
+    const q = message.trim();
+    if (!q || !enabled || loading) return;
+
+    const userMsg = { role: "user", content: q };
+    setMessages((prev) => [...prev, userMsg]);
+    setMessage("");
+    setError(null);
+    setLoading(true);
+    if (onBusy) onBusy(true);
+
+    try {
+      const data = await askQuestion(q);
+      const assistantMsg = {
+        role: "assistant",
+        content: data.answer,
+        citations: data.citations || [],
+        sources: data.sources || [],
+      };
+      setMessages((prev) => [...prev, assistantMsg]);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+      if (onBusy) onBusy(false);
+    }
+  };
 
   return (
-    <>
-      <section className="card">
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            onAsk();
-          }}
-        >
-          <label htmlFor="chat-input">Your question</label>
-          <input
-            id="chat-input"
-            type="text"
-            placeholder="Ask a question about the PDF…"
-            value={message}
-            disabled={!hasUpload || busy}
-            onChange={(e) => onMessageChange(e.target.value)}
-          />
-          <button type="submit" disabled={!message || !hasUpload || busy}>
-            Ask
-          </button>
-        </form>
-      </section>
+    <section className="chat-panel">
+      <div className="message-list">
+        {messages.length === 0 && !loading && (
+          <p className="chat-placeholder">
+            Ask a question about the uploaded PDF.
+          </p>
+        )}
 
-      {status === "asking" && <p className="status-text">Thinking…</p>}
-
-      {answer && (
-        <section className="answer-section">
-          <h2>Answer</h2>
-          <p>{answer.answer}</p>
-          {answer.citations.length > 0 && (
-            <div className="citations">
-              {answer.citations.map((page) => (
-                <span key={page} className="chip">
-                  Page {page}
-                </span>
-              ))}
+        {messages.map((msg, i) => (
+          <div key={i} className={`message ${msg.role}`}>
+            <div className="message-role">
+              {msg.role === "user" ? "You" : "Assistant"}
             </div>
-          )}
-        </section>
-      )}
-    </>
+            <div className="message-content">{msg.content}</div>
+            {msg.citations && msg.citations.length > 0 && (
+              <div className="citations">
+                {msg.citations.map((page) => (
+                  <button
+                    key={page}
+                    className="chip clickable"
+                    type="button"
+                    onClick={() => onJumpToPage && onJumpToPage(page)}
+                  >
+                    Page {page}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+
+        {loading && <p className="status-text">Thinking…</p>}
+        {error && <p className="error" role="alert">{error}</p>}
+      </div>
+
+      <form
+        className="chat-input-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          handleAsk();
+        }}
+      >
+        <input
+          type="text"
+          placeholder="Ask a question about the PDF…"
+          value={message}
+          disabled={!enabled || loading || disabled}
+          onChange={(e) => setMessage(e.target.value)}
+        />
+        <button type="submit" disabled={!message || !enabled || loading || disabled}>
+          Ask
+        </button>
+      </form>
+    </section>
   );
 }

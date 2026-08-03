@@ -25,3 +25,7 @@ export async function askQuestion(message) {
   });
   return readJSON(response);
 }
+
+export function getDocumentFileURL(chatId) {
+  return `${API}/documents/${encodeURIComponent(chatId)}/file`;
+}

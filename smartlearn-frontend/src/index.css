@@ -17,8 +17,8 @@ body {
 }
 
 main {
-  width: min(760px, calc(100% - 32px));
-  margin: 48px auto;
+  width: min(1280px, calc(100% - 32px));
+  margin: 24px auto;
 }
 
 .header {
@@ -169,6 +169,123 @@ hr {
   border: none;
   border-top: 1px solid #dbe3ee;
   margin: 1.25rem 0;
+}
+
+/* ── Day 3 workspace layout ──────────────────────────────────────────── */
+
+.workspace {
+  display: flex;
+  gap: 1rem;
+  height: calc(100vh - 280px);
+  min-height: 480px;
+  margin-top: 1rem;
+}
+
+/* ── PDF Preview ─────────────────────────────────────────────────────── */
+
+.pdf-preview {
+  flex: 0 0 55%;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #dbe3ee;
+  border-radius: 16px;
+  overflow: hidden;
+  background: white;
+}
+
+.preview-placeholder {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #5c6b7e;
+  font-size: 0.95rem;
+}
+
+.preview-toolbar {
+  padding: 0.5rem 1rem;
+  background: #f4f7fb;
+  border-bottom: 1px solid #dbe3ee;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #5c6b7e;
+}
+
+.preview-frame {
+  flex: 1;
+  border: none;
+  width: 100%;
+}
+
+/* ── Chat Panel ──────────────────────────────────────────────────────── */
+
+.chat-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #dbe3ee;
+  border-radius: 16px;
+  background: white;
+  overflow: hidden;
+}
+
+.message-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem;
+}
+
+.chat-placeholder {
+  color: #5c6b7e;
+  font-size: 0.9rem;
+  text-align: center;
+  margin-top: 3rem;
+}
+
+.message {
+  margin-bottom: 1rem;
+}
+
+.message-role {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.25rem;
+  color: #5c6b7e;
+}
+
+.message.assistant .message-role {
+  color: #6366f1;
+}
+
+.message-content {
+  line-height: 1.55;
+  white-space: pre-wrap;
+  font-size: 0.95rem;
+}
+
+.chat-input-form {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid #dbe3ee;
+  background: #fafbfc;
+}
+
+.chat-input-form input[type="text"] {
+  flex: 1;
+  min-width: 0;
+}
+
+.chip.clickable {
+  cursor: pointer;
+  border: none;
+  transition: background 0.15s;
+}
+
+.chip.clickable:hover {
+  background: #c7d2fe;
 }
 
 @media (max-width: 500px) {

@@ -1,12 +1,11 @@
 import os
-import re
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from services.llm import answer_from_pages
-from services.pdf import extract_pages
+from services import rag
 
 app = FastAPI(title="SmartLearn Lite API")
 
@@ -24,7 +23,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-documents: dict[str, list[dict]] = {}
+documents: dict[str, dict] = {}
 
 
 class ChatRequest(BaseModel):
@@ -55,8 +54,8 @@ async def upload_pdf(
         raise HTTPException(status_code=400, detail="File must not be empty")
 
     try:
-        pages = extract_pages(pdf_bytes)
-    except ValueError as e:
+        pages = rag.extract_pages_from_bytes_for_rag(pdf_bytes)
+    except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
     characters = sum(len(p["text"]) for p in pages)
@@ -66,20 +65,41 @@ async def upload_pdf(
             detail="No readable text found in this PDF. OCR is not supported.",
         )
 
-    documents[chat_id] = pages
+    try:
+        documents[chat_id] = rag.prepare_rag_chat_record(
+            chat_id=chat_id,
+            filename=file.filename,
+            pdf_bytes=pdf_bytes,
+            pages=pages,
+        )
+    except Exception:
+        documents.pop(chat_id, None)
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to process the PDF. Please try again.",
+        )
 
-    return {
-        "status": "ok",
-        "filename": file.filename,
-        "pages": len(pages),
-        "characters": characters,
-    }
+    return rag.build_upload_response(documents[chat_id])
+
+
+@app.get("/documents/{chat_id}/file")
+async def get_document_file(chat_id: str):
+    """Serve the uploaded PDF file for a given chat session."""
+    document = documents.get(chat_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail=f"No document found for chat_id '{chat_id}'.")
+
+    saved_path = document.get("saved_pdf_path")
+    if saved_path is None or not os.path.exists(saved_path):
+        raise HTTPException(status_code=404, detail="PDF file not found on disk.")
+
+    return FileResponse(saved_path, media_type="application/pdf")
 
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
-    pages = documents.get(request.chat_id)
-    if pages is None:
+    document = documents.get(request.chat_id)
+    if document is None:
         raise HTTPException(
             status_code=404,
             detail=f"No document found for chat_id '{request.chat_id}'. "
@@ -87,16 +107,10 @@ async def chat(request: ChatRequest):
         )
 
     try:
-        answer = answer_from_pages(pages, request.message)
-    except HTTPException:
-        raise
+        result = rag.answer_chat_turn(document, request.message)
     except Exception as e:
         raise HTTPException(
             status_code=502, detail=f"{type(e).__name__}: {e}"
         )
 
-    cited = {int(m.group(1)) for m in re.finditer(r"[\[【]Page\s+(\d+)[\]】]", answer)}
-    valid_pages = {p["page"] for p in pages}
-    citations = sorted(cited & valid_pages)
-
-    return {"answer": answer, "citations": citations}
+    return result

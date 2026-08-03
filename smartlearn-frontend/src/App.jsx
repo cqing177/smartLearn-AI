@@ -1,15 +1,16 @@
-import { useState } from "react";
-import { uploadPDF, askQuestion } from "./api.js";
+import { useState, useCallback } from "react";
+import { uploadPDF, CHAT_ID } from "./api.js";
 import PdfUploader from "./PdfUploader.jsx";
+import PdfPreview from "./PdfPreview.jsx";
 import ChatPanel from "./ChatPanel.jsx";
 
 export default function App() {
   const [file, setFile] = useState(null);
   const [upload, setUpload] = useState(null);
-  const [message, setMessage] = useState("");
-  const [answer, setAnswer] = useState(null);
-  const [status, setStatus] = useState("idle"); // idle | uploading | asking
+  const [status, setStatus] = useState("idle"); // idle | uploading
   const [error, setError] = useState(null);
+  const [activePage, setActivePage] = useState(1);
+  const [uploadKey, setUploadKey] = useState(0);
 
   const handleUpload = async () => {
     if (!file) return;
@@ -19,6 +20,8 @@ export default function App() {
       const data = await uploadPDF(file);
       setUpload(data);
       setFile(null);
+      setActivePage(1);
+      setUploadKey((k) => k + 1);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -26,21 +29,9 @@ export default function App() {
     }
   };
 
-  const handleAsk = async () => {
-    const q = message.trim();
-    if (!q) return;
-    setError(null);
-    setStatus("asking");
-    try {
-      const data = await askQuestion(q);
-      setAnswer(data);
-      setMessage("");
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setStatus("idle");
-    }
-  };
+  const handleJumpToPage = useCallback((page) => {
+    setActivePage(page);
+  }, []);
 
   return (
     <main>
@@ -49,7 +40,6 @@ export default function App() {
         <p>Upload a PDF and ask questions about your course material.</p>
       </div>
 
-      {/* ---- upload ---- */}
       <PdfUploader
         file={file}
         onFileChange={setFile}
@@ -58,20 +48,21 @@ export default function App() {
         onUpload={handleUpload}
       />
 
-      {/* ---- error ---- */}
       {error && <p className="error" role="alert">{error}</p>}
 
-      <hr />
-
-      {/* ---- chat ---- */}
-      <ChatPanel
-        message={message}
-        onMessageChange={setMessage}
-        answer={answer}
-        hasUpload={!!upload}
-        status={status}
-        onAsk={handleAsk}
-      />
+      <div className="workspace">
+        <PdfPreview
+          upload={upload}
+          activePage={activePage}
+          chatId={CHAT_ID}
+        />
+        <ChatPanel
+          key={uploadKey}
+          enabled={!!upload}
+          disabled={status !== "idle"}
+          onJumpToPage={handleJumpToPage}
+        />
+      </div>
     </main>
   );
 }

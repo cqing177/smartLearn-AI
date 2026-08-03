@@ -9,3 +9,4 @@ ipykernel
 sentence-transformers
 faiss-cpu
 pandas
+chromadb

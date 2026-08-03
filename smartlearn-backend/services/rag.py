@@ -175,6 +175,18 @@ def parse_pdf_bytes(pdf_bytes: bytes) -> list[dict]:
     return pages
 
 
+def extract_pages_from_bytes_for_rag(pdf_bytes: bytes) -> list[dict]:
+    """Parse uploaded PDF bytes into cleaned [{page, text}] records for the backend upload route."""
+    reader = PdfReader(BytesIO(pdf_bytes))
+    pages: list[dict] = []
+    for page_number, page in enumerate(reader.pages, start=1):
+        raw = page.extract_text() or ""
+        text = clean_text(raw)
+        if text:
+            pages.append({"page": page_number, "text": text})
+    return pages
+
+
 # ── JSON Helpers ─────────────────────────────────────────────────────────────
 
 def save_json(data: object, path: str | Path) -> None:
@@ -395,10 +407,13 @@ def embed_texts(
     model_name: str | None = None,
     batch_size: int = 32,
     device: str | None = None,
+    model_cache_dir: str | Path | None = None,
 ) -> np.ndarray:
     """Encode a list of texts into normalized float32 vectors.
 
     If model is None, loads the model via load_model(model_name or EMBEDDING_MODEL).
+    model_cache_dir is accepted for Chroma appendix compatibility (ignored; model resolution
+    is handled by resolve_model_source internally).
     Returns a 2-D numpy array of shape (len(texts), embedding_dim).
     """
     if model is None:
@@ -962,17 +977,19 @@ def answer_document(
     top_k: int = 3,
     candidate_pool: int = 60,
     answer_model: str = "openrouter/free",
+    history: list[dict] | None = None,
 ) -> dict:
     """Answer one question using retrieval + optional LLM.
 
     Returns a dict with: answer, citations, sources.
     Falls back to local extraction if no API key is available.
+    Pass history (previous turns) so the LLM can resolve context-dependent questions.
     """
     # Retrieve
     hits = search_document(question, document, top_k=top_k, candidate_pool=candidate_pool)
 
     # Try LLM answering if API key exists
-    answer = _try_llm_answer(question, hits, answer_model)
+    answer = _try_llm_answer(question, hits, answer_model, history=history)
     if answer is None:
         answer = best_sentence_answer(question, hits)
 
@@ -986,8 +1003,160 @@ def answer_document(
     }
 
 
-def _try_llm_answer(question: str, hits: list[dict], answer_model: str) -> str | None:
-    """Try to answer via OpenRouter LLM. Returns None if unavailable."""
+def build_grounded_user_prompt(
+    question: str,
+    hits: list[dict],
+    history: list[dict] | None = None,
+) -> str:
+    """Build a grounded LLM prompt combining history, retrieved evidence, and the question."""
+    parts: list[str] = []
+
+    # Recent chat history
+    if history:
+        parts.append("## Recent conversation")
+        for turn in history[-4:]:  # last 4 turns only
+            role = turn.get("role", "user")
+            content = turn.get("content", turn.get("question", ""))
+            parts.append(f"{role}: {content}")
+        parts.append("")
+
+    # Retrieved evidence
+    parts.append("## Retrieved evidence from the document")
+    for h in hits:
+        parts.append(f"### [Page {h['page']}]\n{h['text']}")
+        parts.append("")
+
+    # New question
+    parts.append(f"## Current question\n{question}")
+    parts.append("\nAnswer the current question using only the retrieved evidence above. Cite sources with [Page X].")
+
+    return "\n".join(parts)
+
+
+def answer_document_turn(
+    document: dict,
+    question: str,
+    top_k: int = 3,
+    candidate_pool: int = 60,
+    answer_model: str = "openrouter/free",
+) -> dict:
+    """Answer one question and auto-append the turn to the document's in-memory history.
+
+    Returns the answer result plus the updated history list.
+    """
+    result = answer_document(
+        document, question,
+        top_k=top_k, candidate_pool=candidate_pool, answer_model=answer_model,
+        history=document.get("history", []),
+    )
+    history = append_history(document, question, result)
+    result["history"] = history
+    return result
+
+
+def answer_chat_turn(
+    document: dict,
+    message: str,
+    top_k: int = 3,
+    candidate_pool: int = 60,
+    answer_model: str = "openrouter/free",
+) -> dict:
+    """Route-level chat handler: fresh retrieval + answer + in-memory history update.
+
+    Returns {answer, citations, sources} for the frontend.
+    """
+    result = answer_document_turn(document, message, top_k=top_k, candidate_pool=candidate_pool, answer_model=answer_model)
+    return {
+        "answer": result["answer"],
+        "citations": result["citations"],
+        "sources": result["sources"],
+    }
+
+
+def build_upload_response(document: dict) -> dict:
+    """Build the visible upload success JSON from a richer server-side record."""
+    pages = document.get("pages", [])
+    characters = sum(len(p.get("text", "")) for p in pages)
+    return {
+        "status": "ok",
+        "filename": document.get("filename", ""),
+        "pages": len(pages),
+        "characters": characters,
+    }
+
+
+def prepare_rag_chat_record(
+    chat_id: str,
+    filename: str,
+    pdf_bytes: bytes | None = None,
+    pages: list[dict] | None = None,
+    upload_root: str | Path | None = None,
+    chunk_mode: str = "character_overlap",
+    chunk_size: int = 700,
+    overlap: int = 120,
+    model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
+    batch_size: int = 32,
+    artifact_root: str | Path | None = None,
+) -> dict:
+    """Build an upload-time documents[chat_id] record with pages, chunks, RAG index, and empty history.
+
+    Accepts either pdf_bytes (for the backend upload route) or pre-extracted pages (for notebook tests).
+    """
+    if artifact_root is None:
+        artifact_root = Path(__file__).resolve().parent.parent / "artifacts" / "rag"
+
+    # Resolve pages from pdf_bytes if not provided
+    if pages is None:
+        if pdf_bytes is None:
+            raise ValueError("One of pdf_bytes or pages must be provided")
+        pages = extract_pages_from_bytes_for_rag(pdf_bytes)
+
+    # Save uploaded PDF to disk
+    if upload_root is None:
+        upload_root = Path(__file__).resolve().parent.parent / "uploads"
+    upload_dir = Path(upload_root)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    saved_pdf_path = upload_dir / f"{chat_id}.pdf"
+    if pdf_bytes is not None:
+        saved_pdf_path.write_bytes(pdf_bytes)
+
+    # Build RAG artifacts
+    rag_doc = prepare_rag_document(
+        document_id=chat_id,
+        filename=filename,
+        pages=pages,
+        chunk_mode=chunk_mode,
+        chunk_size=chunk_size,
+        overlap=overlap,
+        model_name=model_name,
+        batch_size=batch_size,
+        artifact_root=artifact_root,
+    )
+
+    return {
+        "chat_id": chat_id,
+        "filename": filename,
+        "saved_pdf_path": str(saved_pdf_path),
+        "pages": pages,
+        "chunks": rag_doc["chunks"],
+        "history": [],
+        "artifacts": rag_doc["artifacts"],
+        "model_name": model_name,
+        "rag": {
+            "document_id": chat_id,
+            "index_path": rag_doc["artifacts"]["index"],
+            "chunk_path": rag_doc["artifacts"]["chunks"],
+            "model_name": model_name,
+        },
+    }
+
+
+def _try_llm_answer(question: str, hits: list[dict], answer_model: str, history: list[dict] | None = None) -> str | None:
+    """Try to answer via OpenRouter LLM. Returns None if unavailable.
+
+    When history is provided, earlier turns are included as messages so the
+    LLM can resolve pronouns and references like "that retriever".
+    """
     import os as _os
 
     api_key = _os.getenv("OPENROUTER_API_KEY")
@@ -1006,6 +1175,17 @@ def _try_llm_answer(question: str, hits: list[dict], answer_model: str) -> str |
             "If the answer is not in the PDF, say that the document does not provide enough information. "
             "Never invent a page number."
         )
+
+        messages: list[dict] = [{"role": "system", "content": system}]
+
+        # Include recent conversation history so follow-up questions have context
+        if history:
+            for turn in history[-4:]:
+                messages.append({"role": "user", "content": turn.get("question", "")})
+                messages.append({"role": "assistant", "content": turn.get("answer", "")})
+
+        messages.append({"role": "user", "content": f"PDF text:\n{context}\n\nquestion: {question}"})
+
         model_id = _os.getenv("OPENROUTER_MODEL", answer_model)
 
         resp = _requests.post(
@@ -1017,10 +1197,7 @@ def _try_llm_answer(question: str, hits: list[dict], answer_model: str) -> str |
             json={
                 "model": model_id,
                 "temperature": 0.0,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": f"PDF text:\n{context}\n\nquestion: {question}"},
-                ],
+                "messages": messages,
             },
             timeout=30,
         )
@@ -1124,6 +1301,162 @@ def evaluate_questions(
 
     import pandas as pd
     return pd.DataFrame(rows)
+
+
+# ── Artifact Directory Helpers ───────────────────────────────────────────────
+
+def ensure_artifact_dirs(artifact_root: str | Path | None = None) -> dict[str, Path]:
+    """Return all artifact folder paths, creating them if needed.
+
+    Returns a dict with keys: raw_pages, chunks, embeddings, reports, chroma, indexes.
+    """
+    if artifact_root is None:
+        artifact_root = Path(__file__).resolve().parent.parent / "artifacts" / "rag"
+    root = Path(artifact_root)
+    dirs = {
+        "raw_pages": root / "raw_pages",
+        "chunks": root / "chunks",
+        "embeddings": root / "embeddings",
+        "reports": root / "reports",
+        "chroma": root / "chroma",
+        "indexes": root,
+    }
+    for d in dirs.values():
+        d.mkdir(parents=True, exist_ok=True)
+    return dirs
+
+
+# ── Appendix B: Chroma Collection (Optional Branch) ──────────────────────────
+
+def _require_chromadb():
+    """Import chromadb or raise a clear ImportError."""
+    try:
+        import chromadb
+        return chromadb
+    except ImportError:
+        raise ImportError(
+            "chromadb is required for Chroma features. "
+            "Install it with: pip install chromadb"
+        )
+
+
+def build_chroma_collection(
+    document_id: str,
+    chunks: list[dict],
+    embeddings: np.ndarray,
+    persist_dir: str | Path,
+) -> dict:
+    """Build or reopen a persistent Chroma collection from chunks and embeddings.
+
+    Stores page number and chunk_id as metadata so queries can return them directly.
+    """
+    chromadb = _require_chromadb()
+
+    client = chromadb.PersistentClient(path=str(persist_dir))
+    collection_name = document_id
+
+    # Delete existing collection with same name to rebuild cleanly
+    try:
+        client.delete_collection(collection_name)
+    except Exception:
+        pass
+
+    collection = client.create_collection(
+        name=collection_name,
+        metadata={"document_id": document_id},
+    )
+
+    # Prepare batch data
+    ids = [str(c["chunk_id"]) for c in chunks]
+    documents = [c["text"] for c in chunks]
+    metadatas = [{"page": c["page"], "chunk_id": c["chunk_id"]} for c in chunks]
+    emb_list = embeddings.tolist()
+
+    collection.add(ids=ids, documents=documents, metadatas=metadatas, embeddings=emb_list)
+
+    return {
+        "collection_name": collection_name,
+        "item_count": collection.count(),
+    }
+
+
+def query_chroma_collection(
+    document_id: str,
+    query_embedding: np.ndarray,
+    persist_dir: str | Path,
+    top_k: int,
+) -> list[dict]:
+    """Query a Chroma collection and return top-k matches.
+
+    Each result carries: chunk_id, page, text, score.
+    """
+    chromadb = _require_chromadb()
+
+    client = chromadb.PersistentClient(path=str(persist_dir))
+    collection = client.get_collection(document_id)
+
+    q_emb = query_embedding.reshape(1, -1).tolist()
+    results = collection.query(query_embeddings=q_emb, n_results=top_k)
+
+    hits: list[dict] = []
+    if results["ids"] and results["ids"][0]:
+        for i, doc_id in enumerate(results["ids"][0]):
+            meta = results["metadatas"][0][i] if results["metadatas"] else {}
+            doc_text = results["documents"][0][i] if results["documents"] else ""
+            distance = results["distances"][0][i] if results["distances"] else 0.0
+            hits.append({
+                "chunk_id": meta.get("chunk_id", int(doc_id)),
+                "page": meta.get("page", 0),
+                "text": doc_text or "",
+                "score": float(1.0 / (1.0 + distance)),
+            })
+
+    return hits
+
+
+def search_document_with_chroma(
+    question: str,
+    document: dict,
+    persist_dir: str | Path,
+    top_k: int = 3,
+    batch_size: int = 1,
+) -> list[dict]:
+    """Search via Chroma: embed question → query collection → return top-k hits."""
+    q_embedding = embed_texts(
+        [question],
+        model_name=document.get("model_name", EMBEDDING_MODEL),
+        batch_size=batch_size,
+    )
+    return query_chroma_collection(
+        document_id=document["document_id"],
+        query_embedding=q_embedding,
+        persist_dir=persist_dir,
+        top_k=top_k,
+    )
+
+
+def answer_document_with_chroma(
+    document: dict,
+    question: str,
+    persist_dir: str | Path,
+    top_k: int = 3,
+    answer_model: str = "openrouter/free",
+) -> dict:
+    """Answer via Chroma retrieval. Returns the same {answer, citations, sources} shape as FAISS."""
+    hits = search_document_with_chroma(question, document, persist_dir, top_k=top_k)
+
+    answer = _try_llm_answer(question, hits, answer_model)
+    if answer is None:
+        answer = best_sentence_answer(question, hits)
+
+    citations = extract_citations(answer, hits)
+    sources = build_sources(hits)
+
+    return {
+        "answer": answer,
+        "citations": citations,
+        "sources": sources,
+    }
 
 
 # ── Appendix A: LangChain RecursiveCharacterTextSplitter ──────────────────────
