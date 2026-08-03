@@ -3,7 +3,6 @@ import re
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from services.llm import answer_from_pages
@@ -101,10 +100,3 @@ async def chat(request: ChatRequest):
     citations = sorted(cited & valid_pages)
 
     return {"answer": answer, "citations": citations}
-
-
-# Serve frontend static files when STATIC_DIR is configured (production).
-# Mounted last so API routes take priority over static files.
-STATIC_DIR = os.getenv("STATIC_DIR")
-if STATIC_DIR and os.path.isdir(STATIC_DIR):
-    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

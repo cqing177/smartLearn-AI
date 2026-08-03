@@ -1,6 +1,4 @@
-// In production (same-origin) set VITE_API_URL="" so requests go to the current host.
-// Falls back to localhost:8000 for local development.
-export const API = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+export const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
 export const CHAT_ID = "day2-demo";
 
 async function readJSON(response) {
