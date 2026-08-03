@@ -5,3 +5,7 @@ pypdf
 openai
 requests
 python-dotenv
+ipykernel
+sentence-transformers
+faiss-cpu
+pandas
